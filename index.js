@@ -1,5 +1,4 @@
 const express = require('express');
-const qrcode = require('qrcode-terminal');
 const { default: makeWASocket, useMultiFileAuthState, DisconnectReason } = require('@whiskeysockets/baileys');
 const fetch = require('node-fetch');
 const fs = require('fs').promises;
@@ -9,20 +8,8 @@ const app = express();
 const port = process.env.PORT || 3000;
 
 // Configurações
-const WEBHOOK_URL = process.env.WEBHOOK_URL; // Removido o valor padrão
 const KEEP_ALIVE_INTERVAL = 14 * 60 * 1000; // 14 minutos
 const FETCH_TIMEOUT = 10_000; // 10 segundos
-const MESSAGE_TIMEOUT = 30 * 60 * 1000; // 30 minutos em milissegundos
-const CLEANUP_INTERVAL = 5 * 60 * 1000; // 5 minutos em milissegundos
-
-// Verificar se o WEBHOOK_URL está definido
-if (!WEBHOOK_URL) {
-  console.error('Erro: A variável de ambiente WEBHOOK_URL não está definida. Configure-a no Render.');
-  process.exit(1); // Encerra o processo se a variável não estiver definida
-}
-
-// Armazenamento em memória dos números liberados
-const allowedSenders = new Map(); // { "5575992017552": { lastMessageTime: timestamp } }
 
 // Middleware pra parsear JSON em rotas que não sejam /send
 app.use((req, res, next) => {
@@ -142,94 +129,15 @@ const connectToWhatsApp = async (retryCount = 0) => {
   // Evento para monitorar mensagens recebidas
   sock.ev.on('messages.upsert', async ({ messages }) => {
     console.log('Nova mensagem recebida:', messages);
-
-    const msg = messages[0];
-    if (!msg || !msg.message) return;
-
-    // Ignorar mensagens de grupo (se desejado)
-    if (msg.key.remoteJid.endsWith('@g.us')) {
-      console.log('Mensagem de grupo ignorada:', msg.key.remoteJid);
-      return;
-    }
-
-    // Verificar se é uma mensagem de texto
-    const messageType = Object.keys(msg.message)[0];
-    if (messageType !== 'conversation' && messageType !== 'extendedTextMessage') return;
-
-    // Extrair informações
-    const senderNumber = msg.key.remoteJid.split('@')[0];
-    const conversationId = msg.key.id;
-    const text = msg.message.conversation || msg.message.extendedTextMessage?.text || '';
-    const senderName = msg.pushName || senderNumber;
-    const currentTime = Date.now();
-
-    console.log(`Mensagem recebida de ${senderName} (${senderNumber}) - ID da conversa: ${conversationId}: ${text}`);
-
-    // Verificar se o remetente já está liberado
-    const senderData = allowedSenders.get(senderNumber);
-    const isAllowed = senderData && (currentTime - senderData.lastMessageTime) < MESSAGE_TIMEOUT;
-
-    // Verificar se a mensagem contém "Dr. Eliah" ou variações (case-insensitive)
-    const drEliahRegex = /dr\.?\s*eliah/i; // Aceita "dr eliah", "dr. eliah", "DR ELIAH", etc.
-    const containsDrEliah = drEliahRegex.test(text);
-
-    // Se o remetente não está liberado e a mensagem não contém "Dr. Eliah", ignorar
-    if (!isAllowed && !containsDrEliah) {
-      console.log(`Mensagem ignorada: remetente ${senderNumber} não está liberado e mensagem não contém "Dr. Eliah".`);
-      return;
-    }
-
-    // Se a mensagem contém "Dr. Eliah", liberar o remetente
-    if (containsDrEliah) {
-      console.log(`Remetente ${senderNumber} liberado por mencionar "Dr. Eliah".`);
-    }
-
-    // Atualizar o timestamp do remetente
-    allowedSenders.set(senderNumber, { lastMessageTime: currentTime });
-
-    // Preparar os dados pra enviar pro webhook
-    const webhookData = {
-      number: senderNumber,
-      conversationId: conversationId,
-      message: text,
-      name: senderName,
-    };
-
-    // Enviar mensagem para o webhook do Make com retry
-    let retries = 3;
-    while (retries > 0) {
-      try {
-        const cleanedData = cleanAndParseJSON(webhookData);
-        const response = await fetch(WEBHOOK_URL, {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(cleanedData),
-          timeout: FETCH_TIMEOUT,
-        });
-        if (response.ok) {
-          console.log('Mensagem enviada para o webhook do Make com sucesso!');
-          break;
-        } else {
-          throw new Error(`Webhook respondeu com status ${response.status}`);
-        }
-      } catch (error) {
-        retries--;
-        console.error(`Erro ao enviar mensagem para o webhook do Make (tentativa ${4 - retries}/3):`, error);
-        if (retries === 0) {
-          console.error('Falha ao enviar mensagem para o webhook após 3 tentativas');
-        } else {
-          await new Promise(resolve => setTimeout(resolve, 2000 * (3 - retries))); // Backoff exponencial
-        }
-      }
-    }
+    // Não há mais lógica de "Dr. Eliah" ou armazenamento de remetentes
   });
 
   // Evento de atualização de conexão
   sock.ev.on('connection.update', (update) => {
     const { connection, qr, lastDisconnect } = update;
     if (qr) {
-      console.log('QR Code (texto):', qr);
-      qrcode.generate(qr, { small: true });
+      const qrLink = `https://api.qrserver.com/v1/create-qr-code/?size=150x150&data=${encodeURIComponent(qr)}`;
+      console.log('QR Code (link):', qrLink);
     }
     if (connection === 'open') {
       console.log('Conectado ao WhatsApp com sucesso!');
@@ -252,20 +160,6 @@ app.listen(port, '0.0.0.0', () => {
 
 // Conecta ao WhatsApp
 connectToWhatsApp();
-
-// Função para limpar remetentes expirados
-const cleanupExpiredSenders = () => {
-  const currentTime = Date.now();
-  for (const [senderNumber, data] of allowedSenders.entries()) {
-    if ((currentTime - data.lastMessageTime) >= MESSAGE_TIMEOUT) {
-      console.log(`Remetente ${senderNumber} removido da lista de liberados: última mensagem foi há mais de 30 minutos.`);
-      allowedSenders.delete(senderNumber);
-    }
-  }
-};
-
-// Executa a limpeza a cada 5 minutos
-setInterval(cleanupExpiredSenders, CLEANUP_INTERVAL);
 
 // Função para "pingar" a si mesmo a cada 14 minutos
 let keepAliveFailures = 0;
