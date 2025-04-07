@@ -14,10 +14,10 @@
   "devDependencies": {
     "nodemon": "^3.0.1"
   },
-  "author": "Seu Nome",
+  "author": "interatiive",
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/seu-usuario/SFEC.git"
+    "url": "git+https://github.com/interatiive/SFEC.git"
   }
 }
